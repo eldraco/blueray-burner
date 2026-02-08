@@ -90,6 +90,35 @@ need_cmd stat
 need_cmd grep
 need_cmd sed
 
+# Validate an image by attaching it read-only (more reliable than
+# `hdiutil imageinfo`, which can return non-zero for large raw/UDF hybrids).
+validate_image_readable() {
+  local img="$1"
+  local attach_out dev
+
+  attach_out="$(hdiutil attach -nomount -readonly "$img" 2>&1)" || {
+    echo "$attach_out" >&2
+    return 1
+  }
+
+  dev="$(printf '%s\n' "$attach_out" | awk 'NR==1 {print $1}')"
+  [[ -n "$dev" ]] || {
+    echo "hdiutil attach returned no device for image: $img" >&2
+    echo "$attach_out" >&2
+    return 1
+  }
+
+  local i
+  for i in 1 2 3; do
+    hdiutil detach "$dev" >/dev/null 2>&1 && return 0
+    hdiutil detach -force "$dev" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+
+  echo "Failed to detach temporary device: $dev" >&2
+  return 1
+}
+
 # Keep system awake during long operations
 caffeinate -dimsu &
 CAFPID=$!
@@ -101,7 +130,7 @@ if [[ -n "$IMG_IN" ]]; then
   # Reuse existing image
   [[ -f "$IMG_IN" ]] || die "Image not found: $IMG_IN"
   [[ -s "$IMG_IN" ]] || die "Image is empty: $IMG_IN"
-  hdiutil imageinfo "$IMG_IN" >/dev/null 2>&1 || die "Invalid/unreadable image: $IMG_IN"
+  validate_image_readable "$IMG_IN" || die "Invalid/unreadable image: $IMG_IN"
   IMG="$IMG_IN"
   echo "[INFO] Reusing existing image: $IMG"
 else
@@ -156,7 +185,7 @@ else
 
   [[ -f "$IMG" ]] || die "Image file not found after creation: $IMG"
   [[ -s "$IMG" ]] || die "Created image is empty: $IMG"
-  hdiutil imageinfo "$IMG" >/dev/null 2>&1 || die "Created image is not readable: $IMG"
+  validate_image_readable "$IMG" || die "Created image is not readable: $IMG"
 
   IMG_BYTES="$(stat -f%z "$IMG")"
   echo "[INFO] Image ready: $IMG"
@@ -191,4 +220,3 @@ else
 fi
 
 echo "[INFO] Burn completed."
-
